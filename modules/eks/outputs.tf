@@ -17,3 +17,8 @@ output "oidc_provider_arn" {
 output "oidc_issuer_url" {
   value = aws_eks_cluster.this.identity[0].oidc[0].issuer
 }
+
+output "eso_role_arn" {
+  description = "IRSA role ARN for External Secrets Operator — used in the ClusterSecretStore annotation"
+  value       = aws_iam_role.eso.arn
+}

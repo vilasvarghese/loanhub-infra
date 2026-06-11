@@ -135,6 +135,54 @@ resource "aws_iam_role_policy_attachment" "ebs_csi" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
 }
 
+# ── IRSA role for External Secrets Operator ───────────────────────────────────
+# ESO's service account needs permission to read from AWS Secrets Manager so it
+# can sync the RDS password into a K8s Secret for the backend pods.
+data "aws_iam_policy_document" "eso_assume" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.eks.arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:sub"
+      values   = ["system:serviceaccount:external-secrets:external-secrets"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "eso" {
+  name               = "${var.cluster_name}-eso-role"
+  assume_role_policy = data.aws_iam_policy_document.eso_assume.json
+}
+
+data "aws_iam_policy_document" "eso_secrets" {
+  statement {
+    actions = [
+      "secretsmanager:GetSecretValue",
+      "secretsmanager:DescribeSecret",
+    ]
+    resources = ["arn:aws:secretsmanager:*:*:secret:loanhub/*"]
+  }
+}
+
+resource "aws_iam_policy" "eso_secrets" {
+  name   = "${var.cluster_name}-eso-secrets"
+  policy = data.aws_iam_policy_document.eso_secrets.json
+}
+
+resource "aws_iam_role_policy_attachment" "eso" {
+  role       = aws_iam_role.eso.name
+  policy_arn = aws_iam_policy.eso_secrets.arn
+}
+
 # ── EKS add-ons ────────────────────────────────────────────────────────────────
 # Simple addons (no extra IAM): vpc-cni, coredns, kube-proxy
 resource "aws_eks_addon" "simple" {

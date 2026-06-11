@@ -29,6 +29,11 @@ output "rds_host" {
   value       = module.rds.db_host
 }
 
+output "eso_role_arn" {
+  description = "Set in gitops/base/backend/clustersecretstore.yaml → serviceAccountRef annotation"
+  value       = module.eks.eso_role_arn
+}
+
 output "rds_db_secret_arn" {
   description = "Set in the ExternalSecret (loanhub-gitops/base/backend/externalsecret.yaml)"
   value       = module.rds.db_secret_arn
