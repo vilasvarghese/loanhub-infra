@@ -4,31 +4,118 @@ on:
   push:
     branches: [main]
   pull_request:
-    paths: ['**.tf']
+    paths: ['**.tf', '**.tfvars']
 
 permissions:
   contents: read
-  pull-requests: write
+  pull-requests: write   # post plan as PR comment
+  id-token: write        # AWS OIDC
+
+env:
+  TF_VERSION: 1.7.5
+  AWS_REGION: ap-south-1
 
 jobs:
+  # ── 1. Validate: fmt + init + validate (every PR, no AWS creds needed) ────────
   validate:
-    name: fmt, validate
+    name: fmt & validate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.7.5
+          terraform_version: ${{ env.TF_VERSION }}
 
       - name: Format check
         run: terraform fmt -check -recursive
 
-      - name: Init (no backend)
+      - name: Init (local backend)
         run: terraform init -backend=false
 
       - name: Validate
         run: terraform validate
 
-  # TODO (Phase 4/5): add a `plan` job (needs AWS OIDC creds) that posts the
-  # plan to the PR, and a gated `apply` job on merge to main.
+  # ── 2. Plan: show what would change, post as PR comment ───────────────────────
+  plan:
+    name: terraform plan
+    runs-on: ubuntu-latest
+    needs: validate
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_INFRA }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform init (remote backend)
+        run: terraform init
+
+      - name: Terraform plan
+        id: plan
+        run: |
+          terraform plan -no-color -out=tfplan 2>&1 | tee plan-output.txt
+          echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
+      - name: Post plan as PR comment
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        env:
+          PLAN_OUTPUT: ${{ steps.plan.outputs.exitcode }}
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('plan-output.txt', 'utf8');
+            const maxLen = 65000;
+            const truncated = plan.length > maxLen
+              ? plan.substring(0, maxLen) + '\n\n... (truncated)'
+              : plan;
+            const body = `### Terraform Plan
+            \`\`\`hcl\n${truncated}\n\`\`\`
+            *Triggered by @${{ github.actor }} on \`${{ github.ref }}\`*`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });
+
+      - name: Fail if plan errored
+        if: steps.plan.outputs.exitcode == '1'
+        run: exit 1
+
+  # ── 3. Apply: runs only on merge to main, requires manual approval ────────────
+  apply:
+    name: terraform apply
+    runs-on: ubuntu-latest
+    needs: validate
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # Requires a GitHub environment named 'production' with a required reviewer
+    # configured (Settings → Environments → production → Required reviewers).
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_INFRA }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform init
+        run: terraform init
+
+      - name: Terraform apply
+        run: terraform apply -auto-approve
