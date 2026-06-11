@@ -1,0 +1,34 @@
+name: terraform
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths: ['**.tf']
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  validate:
+    name: fmt, validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.5
+
+      - name: Format check
+        run: terraform fmt -check -recursive
+
+      - name: Init (no backend)
+        run: terraform init -backend=false
+
+      - name: Validate
+        run: terraform validate
+
+  # TODO (Phase 4/5): add a `plan` job (needs AWS OIDC creds) that posts the
+  # plan to the PR, and a gated `apply` job on merge to main.
