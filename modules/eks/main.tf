@@ -101,15 +101,58 @@ resource "aws_eks_node_group" "this" {
   ]
 }
 
-# ── EKS add-ons (vpc-cni, coredns, kube-proxy, ebs-csi) ───────────────────────
-locals {
-  addons = ["vpc-cni", "coredns", "kube-proxy", "aws-ebs-csi-driver"]
+# ── IRSA role for EBS CSI driver ──────────────────────────────────────────────
+# The aws-ebs-csi-driver addon must have its own IAM role so its service account
+# can call EC2 APIs (CreateVolume, AttachVolume, etc.). Without this the addon
+# pod can't start and the addon hangs in CREATING until the 20-minute timeout.
+data "aws_iam_policy_document" "ebs_csi_assume" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.eks.arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:sub"
+      values   = ["system:serviceaccount:kube-system:ebs-csi-controller-sa"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
 }
 
-resource "aws_eks_addon" "this" {
-  for_each                    = toset(local.addons)
+resource "aws_iam_role" "ebs_csi" {
+  name               = "${var.cluster_name}-ebs-csi-role"
+  assume_role_policy = data.aws_iam_policy_document.ebs_csi_assume.json
+}
+
+resource "aws_iam_role_policy_attachment" "ebs_csi" {
+  role       = aws_iam_role.ebs_csi.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+}
+
+# ── EKS add-ons ────────────────────────────────────────────────────────────────
+# Simple addons (no extra IAM): vpc-cni, coredns, kube-proxy
+resource "aws_eks_addon" "simple" {
+  for_each                    = toset(["vpc-cni", "coredns", "kube-proxy"])
   cluster_name                = aws_eks_cluster.this.name
   addon_name                  = each.value
   resolve_conflicts_on_update = "OVERWRITE"
   depends_on                  = [aws_eks_node_group.this]
+}
+
+# EBS CSI driver — needs the IRSA role attached via service_account_role_arn
+resource "aws_eks_addon" "ebs_csi" {
+  cluster_name                = aws_eks_cluster.this.name
+  addon_name                  = "aws-ebs-csi-driver"
+  service_account_role_arn    = aws_iam_role.ebs_csi.arn
+  resolve_conflicts_on_update = "OVERWRITE"
+  depends_on = [
+    aws_eks_node_group.this,
+    aws_iam_role_policy_attachment.ebs_csi,
+  ]
 }
