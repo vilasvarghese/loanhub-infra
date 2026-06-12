@@ -30,7 +30,7 @@ variable "db_username" {
 variable "github_org" {
   description = "GitHub organisation or user that owns the repos"
   type        = string
-  default     = "raj-pro"
+  default     = "vilasvarghese"
 }
 
 locals {
