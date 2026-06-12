@@ -80,6 +80,11 @@ module "rds" {
   password = random_password.db.result
   port     = 5432
 
+  # Use our own random_password (stored in Secrets Manager + read by ESO)
+  # instead of letting RDS manage its own master-user secret.
+  manage_master_user_password = false
+
+
   multi_az            = var.environment == "prod"
   publicly_accessible = false
 
